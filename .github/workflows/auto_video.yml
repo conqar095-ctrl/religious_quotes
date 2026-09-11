@@ -176,7 +176,21 @@ jobs:
           echo "All required secrets are present."
 
       # ============================================================
-      # 6) Run video pipeline
+      # 6) Create YouTube token.json from GitHub Secret
+      # ============================================================
+      - name: Create YouTube token.json
+        shell: bash
+        run: |
+          set -e
+
+          printf '%s' "$YOUTUBE_TOKEN_JSON" > token.json
+
+          test -s token.json
+
+          echo "YouTube token.json created successfully."
+
+      # ============================================================
+      # 7) Run video pipeline
       # ============================================================
       - name: Run pipeline
         shell: bash
@@ -190,7 +204,7 @@ jobs:
           python religious_quotes.py
 
       # ============================================================
-      # 7) Save used-script state back to GitHub
+      # 8) Save used-script state back to GitHub
       # ============================================================
       - name: Save used-script state
         shell: bash
@@ -211,7 +225,7 @@ jobs:
           git push
 
       # ============================================================
-      # 8) Cleanup sensitive generated token file
+      # 9) Cleanup sensitive generated token file
       # ============================================================
       - name: Cleanup token
         if: always()
