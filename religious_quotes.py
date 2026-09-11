@@ -2598,7 +2598,6 @@ def build_youtube_metadata(script: str, selected_number: int):
 
 def upload_to_youtube(video_path: Path, script: str, selected_number: int):
     from googleapiclient.http import MediaFileUpload
-    from googleapiclient.errors import HttpError
 
     youtube = get_youtube_client()
     metadata = build_youtube_metadata(script, selected_number)
@@ -2613,7 +2612,7 @@ def upload_to_youtube(video_path: Path, script: str, selected_number: int):
             "defaultAudioLanguage": "ar",
         },
         "status": {
-            "privacyStatus": YOUTUBE_PRIVACY,
+            "privacyStatus": "public",
             "selfDeclaredMadeForKids": False,
         },
     }
@@ -2622,6 +2621,7 @@ def upload_to_youtube(video_path: Path, script: str, selected_number: int):
     print("STEP 6 — YOUTUBE UPLOAD")
     print("=" * 70)
     print(f"📤 Title: {metadata['title']}")
+    print("🌍 Privacy: PUBLIC")
     print("⬆️ Uploading video...")
 
     media = MediaFileUpload(
@@ -2653,65 +2653,19 @@ def upload_to_youtube(video_path: Path, script: str, selected_number: int):
             video_id = response["id"]
             break
 
+    if not video_id:
+        raise RuntimeError(
+            "YouTube upload finished without returning a video ID."
+        )
+
     print(f"✅ Upload completed: {video_id}")
-
-    if YOUTUBE_PRIVACY != "private":
-        return video_id
-
-    print(
-        f"⏳ Waiting {YOUTUBE_CHECK_MINUTES} minutes before status check..."
-    )
-    time.sleep(YOUTUBE_CHECK_MINUTES * 60)
-
-    print("🔍 Checking YouTube processing status...")
-    try:
-        response = (
-            youtube.videos()
-            .list(part="status", id=video_id)
-            .execute()
-        )
-    except HttpError as error:
-        # The upload succeeded. Do not pretend it failed just because a
-        # post-upload verification request failed.
-        print(f"⚠️ Status check failed after successful upload: {error}")
-        print("⚠️ Video remains on YouTube and will stay private.")
-        raise RuntimeError(
-            f"Upload succeeded with video ID {video_id}, "
-            f"but status verification failed: {error}"
-        )
-
-    items = response.get("items", [])
-    if not items:
-        raise RuntimeError(
-            f"Upload succeeded with video ID {video_id}, but YouTube "
-            "returned no status item."
-        )
-
-    status = items[0].get("status", {})
-    upload_status = status.get("uploadStatus")
-    processing_status = status.get("healthStatus", {}).get("status")
-
-    print(f"📌 Upload status: {upload_status}")
-
-    if upload_status == "failed":
-        raise RuntimeError(
-            f"YouTube reported upload failure for video {video_id}."
-        )
-
-    youtube.videos().update(
-        part="status",
-        body={
-            "id": video_id,
-            "status": {
-                "privacyStatus": "public",
-                "selfDeclaredMadeForKids": False,
-            },
-        },
-    ).execute()
-
-    print("🌍 Video is now PUBLIC.")
+    print("🌍 Video uploaded as PUBLIC.")
     print(f"🔗 https://www.youtube.com/watch?v={video_id}")
 
+    # لا يوجد تحقق لاحق من حالة المعالجة.
+    # لا يوجد انتظار 10 دقائق.
+    # لا يوجد videos().list() أو videos().update().
+    # بمجرد نجاح videos().insert() نعتبر الرفع ناجحًا.
     return video_id
 
 
