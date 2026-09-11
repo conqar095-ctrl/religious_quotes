@@ -4,9 +4,17 @@ on:
   workflow_dispatch:
 
   schedule:
-    # GitHub Actions cron uses UTC.
-    # هنضبط المواعيد لاحقًا بعد نجاح الاختبار.
+    # 09:00 Egypt time
     - cron: "0 9 * * *"
+      timezone: "Africa/Cairo"
+
+    # 15:00 Egypt time
+    - cron: "0 15 * * *"
+      timezone: "Africa/Cairo"
+
+    # 21:00 Egypt time
+    - cron: "0 21 * * *"
+      timezone: "Africa/Cairo"
 
 permissions:
   contents: write
@@ -40,7 +48,7 @@ jobs:
     steps:
 
       # ============================================================
-      # 1) Download repository
+      # 1) Checkout repository
       # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -144,7 +152,7 @@ jobs:
           python -m pip install -r requirements.txt
 
       # ============================================================
-      # 5) Validate required secrets without printing them
+      # 5) Validate required secrets
       # ============================================================
       - name: Validate secrets
         shell: bash
@@ -176,7 +184,7 @@ jobs:
           echo "All required secrets are present."
 
       # ============================================================
-      # 6) Create YouTube token.json from GitHub Secret
+      # 6) Create YouTube token.json
       # ============================================================
       - name: Create YouTube token.json
         shell: bash
@@ -204,7 +212,7 @@ jobs:
           python religious_quotes.py
 
       # ============================================================
-      # 8) Save used-script state back to GitHub
+      # 8) Save used-script state to GitHub
       # ============================================================
       - name: Save used-script state
         shell: bash
@@ -225,7 +233,7 @@ jobs:
           git push
 
       # ============================================================
-      # 9) Cleanup sensitive generated token file
+      # 9) Cleanup sensitive token
       # ============================================================
       - name: Cleanup token
         if: always()
