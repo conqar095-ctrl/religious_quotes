@@ -11,6 +11,15 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
+from PIL import Image, ImageDraw, ImageFont
+
+try:
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+except ImportError:
+    arabic_reshaper = None
+    get_display = None
+
 
 # ============================================================
 # نور الدقيقة — البرنامج المجمع
@@ -130,7 +139,9 @@ IMAGEMAGICK_DEFAULT_EXE = (
 
 CAPTION_FONT = os.getenv(
     "CAPTION_FONT",
-    "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+    r"C:\Windows\Fonts\arial.ttf"
+    if os.name == "nt"
+    else "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
 )
 QURAN_JSON_PATH = RESOURCE_DIR / "religious_data" / "quran" / "quran.json"
 
@@ -1924,41 +1935,170 @@ def wrap_caption(text: str, max_chars: int = 28) -> str:
     return "\n".join(lines[:5])
 
 
+def _prepare_arabic_text_for_pillow(text: str) -> tuple[str, bool]:
+    """Return text ready for Pillow and whether manual RTL shaping was used."""
+    if arabic_reshaper is None or get_display is None:
+        return text, False
+
+    # Pillow builds that include libraqm can shape RTL text natively.
+    # The fallback below is used only when libraqm is unavailable.
+    reshaped = arabic_reshaper.reshape(text)
+    return get_display(reshaped), True
+
+
+def _text_bbox(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont):
+    """Measure text using native RTL support when available, else fallback shaping."""
+    try:
+        bbox = draw.multiline_textbbox(
+            (0, 0),
+            text,
+            font=font,
+            spacing=10,
+            align="center",
+            direction="rtl",
+            language="ar",
+            stroke_width=1,
+        )
+        return bbox, text
+    except (ValueError, OSError):
+        shaped, _ = _prepare_arabic_text_for_pillow(text)
+        bbox = draw.multiline_textbbox(
+            (0, 0),
+            shaped,
+            font=font,
+            spacing=10,
+            align="center",
+            stroke_width=1,
+        )
+        return bbox, shaped
+
+
+def _draw_multiline_text(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[float, float],
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    fill,
+    spacing: int = 10,
+    stroke_width: int = 1,
+    stroke_fill=None,
+) -> None:
+    """Draw Arabic text reliably with native libraqm or a reshaper+bidi fallback."""
+    try:
+        draw.multiline_text(
+            xy,
+            text,
+            font=font,
+            fill=fill,
+            spacing=spacing,
+            align="center",
+            direction="rtl",
+            language="ar",
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill,
+        )
+        return
+    except (ValueError, OSError):
+        shaped, _ = _prepare_arabic_text_for_pillow(text)
+        draw.multiline_text(
+            xy,
+            shaped,
+            font=font,
+            fill=fill,
+            spacing=spacing,
+            align="center",
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill,
+        )
+
+
 def render_caption_png(
     magick: str,
     text: str,
     output_file: Path,
     is_quran: bool = False,
 ) -> None:
+    """
+    Render Arabic captions with Pillow instead of ImageMagick text rendering.
+
+    ImageMagick is still installed and available for the rest of the pipeline,
+    but Pillow is used for captions because Arabic shaping/RTL handling is much
+    more reliable on Linux.
+    """
     text = wrap_caption(text)
     if not text:
         return
 
-    # نستخدم ImageMagick كما في الاختبار الناجح.
-    text_color = "#F6E7B0" if is_quran else "white"
-    border_color = "#C9A227" if is_quran else "#FFFFFF"
+    output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    caption_path = output_file.parent
-    caption_path.mkdir(parents=True, exist_ok=True)
+    width = VIDEO_WIDTH
+    height = CAPTION_BOX_HEIGHT
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
 
-    cmd = [
-        magick,
-        "-size", f"{VIDEO_WIDTH}x{CAPTION_BOX_HEIGHT}",
-        "xc:none",
-        "-fill", "rgba(0,0,0,0.62)",
-        "-stroke", border_color if is_quran else "rgba(255,255,255,0.12)",
-        "-strokewidth", "2",
-        "-draw", f"roundrectangle 60,15 1020,{CAPTION_BOX_HEIGHT-15} 35,35",
-        "-fill", text_color,
-        "-stroke", "none",
-        "-font", CAPTION_FONT,
-        "-pointsize", str(CAPTION_TEXT_SIZE if not is_quran else 50),
-        "-gravity", "center",
-        "-annotate", "+0+0", text,
-        str(output_file),
+    text_color = (246, 231, 176, 255) if is_quran else (255, 255, 255, 255)
+    border_color = (201, 162, 39, 255) if is_quran else (255, 255, 255, 31)
+
+    draw.rounded_rectangle(
+        (60, 15, 1020, height - 15),
+        radius=35,
+        fill=(0, 0, 0, 158),
+        outline=border_color,
+        width=2,
+    )
+
+    font_candidates = [
+        CAPTION_FONT,
+        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+        r"C:\\Windows\\Fonts\\arial.ttf",
     ]
+    font_path = next((path for path in font_candidates if path and Path(path).exists()), None)
+    if not font_path:
+        raise FileNotFoundError(
+            "لم أجد خطًا عربيًا صالحًا للكابشن. "
+            f"CAPTION_FONT={CAPTION_FONT}"
+        )
 
-    run_command(cmd, f"إنشاء Caption: {output_file.name}")
+    target_width = 900
+    font_size = CAPTION_TEXT_SIZE if not is_quran else 50
+    font = None
+    measured_text = text
+
+    while font_size >= 34:
+        candidate = ImageFont.truetype(font_path, font_size)
+        bbox, candidate_text = _text_bbox(draw, text, candidate)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        if text_width <= target_width and text_height <= height - 50:
+            font = candidate
+            measured_text = candidate_text
+            break
+        font_size -= 2
+
+    if font is None:
+        font = ImageFont.truetype(font_path, 34)
+        bbox, measured_text = _text_bbox(draw, text, font)
+
+    bbox, measured_text = _text_bbox(draw, text, font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+
+    x = (width - text_width) / 2 - bbox[0]
+    y = (height - text_height) / 2 - bbox[1]
+
+    _draw_multiline_text(
+        draw,
+        (x, y),
+        measured_text if measured_text != text else text,
+        font=font,
+        fill=text_color,
+        spacing=10,
+        stroke_width=1,
+        stroke_fill=(0, 0, 0, 185),
+    )
+
+    image.save(output_file, format="PNG")
 
 
 def make_video_clip(
@@ -2370,22 +2510,8 @@ YT_SCOPES = [
     "https://www.googleapis.com/auth/yt-analytics.readonly",
 ]
 
-YOUTUBE_PRIVACY = os.getenv("YOUTUBE_PRIVACY", "public").strip().lower()
-YOUTUBE_CHECK_MINUTES = int(os.getenv("YOUTUBE_CHECK_MINUTES", "10"))
-
-if YOUTUBE_PRIVACY not in {"public", "private", "unlisted"}:
-    raise ValueError(
-        "YOUTUBE_PRIVACY must be one of: public, private, unlisted"
-    )
-
-
-def ensure_youtube_token_file() -> None:
-    """Create token.json from the GitHub/local environment when available."""
-    token_json = os.getenv("YOUTUBE_TOKEN_JSON", "").strip()
-    if token_json:
-        TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        TOKEN_FILE.write_text(token_json, encoding="utf-8")
-        print("✅ YouTube token loaded from YOUTUBE_TOKEN_JSON.")
+YOUTUBE_PRIVACY = "private"
+YOUTUBE_CHECK_MINUTES = 10
 
 
 def get_youtube_client():
@@ -2393,12 +2519,10 @@ def get_youtube_client():
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
 
-    ensure_youtube_token_file()
-
     if not TOKEN_FILE.exists():
         raise RuntimeError(
             f"YouTube token not found:\n{TOKEN_FILE}\n"
-            "Set YOUTUBE_TOKEN_JSON or provide token.json locally."
+            "Run login_channel.py first."
         )
 
     credentials = Credentials.from_authorized_user_file(
@@ -2633,10 +2757,12 @@ def main():
     print(f"🛠️ FFmpeg: {ffmpeg}")
     print(f"🛠️ FFprobe: {ffprobe}")
     print(f"🛠️ ImageMagick: {magick}")
-    print(f"🔐 GitHub/Environment secrets: {'enabled' if os.getenv('ELEVENLABS_API_KEY') or os.getenv('PIXABAY_API_KEY') or os.getenv('PEXELS_API_KEY') or os.getenv('YOUTUBE_TOKEN_JSON') else 'local files'}")
+    print(f"🔑 Shared API files: {KEYS_DIR}")
     print(f"📤 Channel output: {CHANNEL_OUTPUT_DIR}")
-    print(f"📝 Caption font: {CAPTION_FONT}")
-    print(f"🌍 YouTube privacy: {YOUTUBE_PRIVACY}")
+
+    print(f"🛠️ FFmpeg: {ffmpeg}")
+    print(f"🛠️ FFprobe: {ffprobe}")
+    print(f"🛠️ ImageMagick: {magick}")
 
     eleven_keys = read_secret_keys(
         ELEVENLABS_KEY_FILE,
